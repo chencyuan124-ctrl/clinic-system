@@ -442,12 +442,13 @@ def render_calling_page(conn):
 # --叫號系統模組結尾--
 
 # ==========================================
-# 模組 4：任務與職務管理 (修正 Checkbox 型態)
+# 模組 4：任務與職務管理 (器材清單新增「取得位置」)
 # ==========================================
 # --任務與職務管理模組開頭--
 def render_task_page(conn):
     st.subheader("📋 任務與職務管理")
-    tab1, tab2 = st.tabs(["任務清單管理", "職務安排與模板設定"])
+    
+    tab1, tab2, tab3 = st.tabs(["🎯 任務清單管理", "🧑‍🤝‍🧑 職務安排與模板設定", "📦 器材清單管理"])
     
     with tab1:
         st.write("### 🎯 前/中/後任務管理")
@@ -459,7 +460,6 @@ def render_task_page(conn):
         for col in ["階段", "任務名稱", "負責人", "完成狀態"]:
             if col not in task_df.columns: task_df[col] = pd.Series(dtype=object)
 
-        # 強制修正完成狀態為 Boolean，避免 Streamlit 報 Float 錯誤
         task_df["完成狀態"] = task_df["完成狀態"].replace({'TRUE': True, 'FALSE': False, 'True': True, 'False': False, '1': True, '0': False})
         task_df["完成狀態"] = task_df["完成狀態"].fillna(False).astype(bool)
 
@@ -533,6 +533,59 @@ def render_task_page(conn):
                 st.download_button(label="📥 下載排班表", data=output, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
                 st.error(f"匯出失敗，錯誤訊息：{e}")
+
+    # 【第三個 Tab：器材清單管理】
+    with tab3:
+        st.write("### 📦 活動器材清單管理")
+        try:
+            eq_df = conn.read(worksheet="Equipment", ttl=0)
+        except Exception:
+            # 預設欄位加上「取得位置」
+            eq_df = pd.DataFrame(columns=["器材名稱", "數量", "負責人", "取得位置", "準備狀態"])
+
+        # 自動補齊空表欄位 (防呆：舊表若沒「取得位置」，這裡會自動加進去)
+        for col in ["器材名稱", "數量", "負責人", "取得位置", "準備狀態"]:
+            if col not in eq_df.columns: eq_df[col] = pd.Series(dtype=object)
+
+        # 強制轉換準備狀態為布林值 (打勾方塊)
+        eq_df["準備狀態"] = eq_df["準備狀態"].replace({'TRUE': True, 'FALSE': False, 'True': True, 'False': False, '1': True, '0': False})
+        eq_df["準備狀態"] = eq_df["準備狀態"].fillna(False).astype(bool)
+
+        with st.expander("➕ 新增器材", expanded=False):
+            with st.form("add_eq_form", clear_on_submit=True):
+                # 將輸入框排版切分為 4 等份
+                col_e1, col_e2, col_e3, col_e4 = st.columns([2, 1, 2, 2])
+                with col_e1: e_name = st.text_input("器材名稱 *")
+                with col_e2: e_qty = st.number_input("數量", min_value=1, value=1)
+                with col_e3: e_pic = st.text_input("負責準備人員")
+                with col_e4: e_loc = st.text_input("取得位置 (放哪/去哪買)") # 新增取得位置輸入框
+                
+                if st.form_submit_button("新增器材"):
+                    if e_name.strip():
+                        new_row = pd.DataFrame({
+                            "器材名稱": [e_name], 
+                            "數量": [e_qty], 
+                            "負責人": [e_pic], 
+                            "取得位置": [e_loc], # 寫入取得位置
+                            "準備狀態": [False]
+                        })
+                        eq_df = pd.concat([eq_df, new_row], ignore_index=True)
+                        conn.update(worksheet="Equipment", data=eq_df)
+                        st.success("器材新增成功！")
+                        st.rerun()
+                    else:
+                        st.error("器材名稱為必填項目！")
+
+        st.write("**編輯現有器材清單**")
+        edited_eq = st.data_editor(eq_df, num_rows="dynamic", use_container_width=True,
+            column_config={
+                "數量": st.column_config.NumberColumn("數量", min_value=1, step=1),
+                "準備狀態": st.column_config.CheckboxColumn("是否已準備好", default=False)
+            }
+        )
+        if st.button("💾 儲存器材變更", key="save_eq"):
+            conn.update(worksheet="Equipment", data=edited_eq)
+            st.success("器材清單已儲存！")
 # --任務與職務管理模組結尾--
 
 # ==========================================
@@ -665,71 +718,107 @@ def render_history_page(conn):
 # --歷史紀錄模組結尾--
 
 # ==========================================
-# 主程式路由 (調整歷史紀錄分類)
+# 主程式路由 (動態隱藏後台選單機制)
 # ==========================================
-# --主程式架構開頭--
 def main():
     st.markdown("<h3 style='color: #888; margin-top:-20px;'>💆 身心靈保健活動系統</h3>", unsafe_allow_html=True)
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # 判斷系統是否支援最新版的 st.navigation 原生樹狀選單
-    if hasattr(st, "navigation"):
-        # 建立無參數的包裝函式供 st.Page 呼叫
-        def page_display(): render_display_page(conn)
-        def page_registration(): render_registration_page(conn)
-        def page_calling(): render_calling_page(conn)
-        def page_settings(): render_settings_page(conn)
-        def page_task(): render_task_page(conn)
-        def page_history(): render_history_page(conn)
+    # 1. 檢查目前是否為「已登入的工作人員」狀態
+    is_admin = st.session_state.get("is_admin", False)
+    
+    # 2. 準備所有頁面的執行函式
+    def page_display(): render_display_page(conn)
+    def page_registration(): render_registration_page(conn)
+    def page_calling(): render_calling_page(conn)
+    def page_history(): render_history_page(conn)
+    def page_settings(): render_settings_page(conn)
+    def page_task(): render_task_page(conn)
 
-        # 定義完美的樹狀分類結構
+    # 3. 判斷是否支援最新 st.navigation
+    if hasattr(st, "navigation"):
+        # 【民眾視角】：預設只顯示前台這兩個頁面
         pages = {
             "📺 顯示專區": [
                 st.Page(page_display, title="民眾體驗顯示螢幕 (大螢幕)"),
             ],
-            "📝 報名與叫號專區": [
+            "📝 報名專區": [
                 st.Page(page_registration, title="民眾報名專區 (前台)"),
-                st.Page(page_calling, title="排隊清單與叫號操作 (後台)"),
-                st.Page(page_history, title="歷史紀錄與進度 (後台)"), # 已經搬移到這裡囉！
-            ],
-            "⚙️ 系統與後台管理": [
-                st.Page(page_settings, title="體驗項目與名額設定 (後台)"),
-                st.Page(page_task, title="任務與職務管理 (後台)"),
             ]
         }
         
-        # 啟動樹狀導覽
+        # 【工作人員視角】：如果有登入，才把後台的頁面「加」進選單裡
+        if is_admin:
+            pages["📝 叫號與紀錄 (後台)"] = [
+                st.Page(page_calling, title="排隊清單與叫號操作 (後台)"),
+                st.Page(page_history, title="歷史紀錄與進度 (後台)"),
+            ]
+            pages["⚙️ 系統與後台管理"] = [
+                st.Page(page_settings, title="體驗項目與名額設定 (後台)"),
+                st.Page(page_task, title="任務與職務管理 (後台)"),
+            ]
+
         pg = st.navigation(pages)
         pg.run()
         
     else:
-        # 萬一版本較舊，使用符號畫出備用的樹狀選單
+        # 【備用版樹狀選單】的動態隱藏邏輯
         st.sidebar.markdown("### 🗂️ 系統導覽選單")
+        
+        # 民眾只看得到這四行
         tree_menu = [
             "📺 顯示專區",
-            "　├ 民眾體驗顯示螢幕 (大螢幕)",
-            "📝 報名與叫號專區",
-            "　├ 民眾報名專區 (前台)",
-            "　├ 排隊清單與叫號操作 (後台)", # 符號改為 ├
-            "　└ 歷史紀錄與進度 (後台)",   # 搬移到這裡，符號為 └
-            "⚙️ 系統與後台管理",
-            "　├ 體驗項目與名額設定 (後台)",
-            "　└ 任務與職務管理 (後台)"    # 符號改為 └
+            "　└ 民眾體驗顯示螢幕 (大螢幕)",
+            "📝 報名專區",
+            "　└ 民眾報名專區 (前台)",
         ]
         
+        # 登入後才把後台選單接上去
+        if is_admin:
+            tree_menu = [
+                "📺 顯示專區",
+                "　├ 民眾體驗顯示螢幕 (大螢幕)",
+                "📝 報名與叫號專區",
+                "　├ 民眾報名專區 (前台)",
+                "　├ 排隊清單與叫號操作 (後台)",
+                "　└ 歷史紀錄與進度 (後台)",
+                "⚙️ 系統與後台管理",
+                "　├ 體驗項目與名額設定 (後台)",
+                "　└ 任務與職務管理 (後台)"
+            ]
+            
         choice = st.sidebar.radio("請選擇頁面：", tree_menu, label_visibility="collapsed")
-        st.sidebar.markdown("---")
         
-        # 根據選擇的節點執行對應的頁面 (注意符號也有跟著對應修改)
-        if choice == "　├ 民眾體驗顯示螢幕 (大螢幕)": render_display_page(conn)
-        elif choice == "　├ 民眾報名專區 (前台)": render_registration_page(conn)
+        if choice == "　├ 民眾體驗顯示螢幕 (大螢幕)" or choice == "　└ 民眾體驗顯示螢幕 (大螢幕)": render_display_page(conn)
+        elif choice == "　├ 民眾報名專區 (前台)" or choice == "　└ 民眾報名專區 (前台)": render_registration_page(conn)
         elif choice == "　├ 排隊清單與叫號操作 (後台)": render_calling_page(conn)
         elif choice == "　└ 歷史紀錄與進度 (後台)": render_history_page(conn)
         elif choice == "　├ 體驗項目與名額設定 (後台)": render_settings_page(conn)
         elif choice == "　└ 任務與職務管理 (後台)": render_task_page(conn)
         else:
-            # 點到大分類標題時的防呆提示
             st.info("👈 這裡是分類標題，請點擊下方的子項目進入對應頁面。")
+
+    # ==========================================
+    # 4. 側邊欄：低調的工作人員登入區塊
+    # ==========================================
+    st.sidebar.markdown("---")
+    if not is_admin:
+        # 用 expander 折疊起來，民眾通常不會去點
+        with st.sidebar.expander("🔐 工作人員入口", expanded=False):
+            pwd = st.text_input("請輸入密碼解鎖後台", type="password")
+            if st.button("確認登入", use_container_width=True):
+                # 👇 這裡的 "1015" 是您的專屬密碼，可以自行修改
+                if pwd == "1015":
+                    st.session_state["is_admin"] = True
+                    st.rerun() # 密碼正確，重新整理網頁長出後台選單！
+                else:
+                    st.error("密碼錯誤")
+    else:
+        # 登入狀態下，顯示登出按鈕
+        st.sidebar.success("✅ 管理員已登入")
+        if st.sidebar.button("🚪 登出並隱藏後台", use_container_width=True):
+            st.session_state["is_admin"] = False
+            st.rerun() # 登出後，重新整理網頁隱藏後台選單！
 
 if __name__ == '__main__':
     main()
