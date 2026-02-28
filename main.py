@@ -16,12 +16,20 @@ import threading
 st.set_page_config(page_title="身心靈保健活動系統", page_icon="💆", layout="wide")
 
 # ==========================================
-# 共用輔助函式 (鎖定機制、語音播放、狀態更新)
+# 共用輔助函式 (鎖定機制、全域廣播器、語音播放)
 # ==========================================
-# 【新增】：報名專用的互斥鎖，確保同一時間只有一人能寫入資料
 @st.cache_resource
 def get_submit_lock():
     return threading.Lock()
+
+# 【效能優化終極版】：全域記憶體廣播器，跨瀏覽器共享狀態
+@st.cache_resource
+def get_global_state():
+    return {"db_version": 0}
+
+def increment_db_version():
+    """只要資料庫有異動，就呼叫此函式更新版本號"""
+    get_global_state()["db_version"] += 1
 
 def autoplay_audio(text):
     try:
@@ -42,10 +50,11 @@ def autoplay_audio(text):
 def fast_update_queue_status(conn, target_idx, new_status, full_df):
     full_df.loc[target_idx, "狀態"] = new_status
     conn.update(worksheet="Queue", data=full_df)
+    increment_db_version() # 狀態改變，觸發廣播器！
     return full_df
 
 # ==========================================
-# 模組 1：民眾報名專區 (前台 - 加入執行緒鎖防干涉)
+# 模組 1：民眾報名專區 (前台)
 # ==========================================
 def render_registration_page(conn):
     st.subheader("📝 民眾報名專區")
@@ -95,11 +104,8 @@ def render_registration_page(conn):
                     st.error("⚠️ 姓名、聯繫方式、以及體驗項目為必填欄位！")
                 else:
                     st.toast("🔄 正在為您處理，請稍候...")
-                    
-                    # 【核心防護】：取得鎖定，確保排隊寫入
                     with get_submit_lock():
                         try:
-                            # 鎖定後才讀取最新資料，確保拿到的序號是絕對準確的
                             reg_df = conn.read(worksheet="Registration", ttl=0)
                             queue_df = conn.read(worksheet="Queue", ttl=0)
                             latest_settings_df = conn.read(worksheet="Settings", ttl=0)
@@ -143,6 +149,8 @@ def render_registration_page(conn):
                             if not item_idx.empty: latest_settings_df.loc[item_idx, "已報名數"] += 1
                         conn.update(worksheet="Settings", data=latest_settings_df)
 
+                        increment_db_version() # 新報名，觸發廣播器！
+
                     st.session_state["reg_success_msg"] = f"🎉 報名成功！您的總報到序號為：【 {new_serial} 】號"
                     st.session_state["reg_form_key"] += 1
                     st.rerun()
@@ -183,10 +191,7 @@ def render_registration_page(conn):
                             st.error("請至少選擇一項！")
                         else:
                             st.toast("🔄 正在為您處理，請稍候...")
-                            
-                            # 【核心防護】：加選區也同樣加上鎖定機制
                             with get_submit_lock():
-                                # 在鎖定區內重新讀取，確保不蓋掉別人的資料
                                 reg_df = conn.read(worksheet="Registration", ttl=0)
                                 queue_df = conn.read(worksheet="Queue", ttl=0)
                                 latest_settings_df = conn.read(worksheet="Settings", ttl=0)
@@ -218,74 +223,8 @@ def render_registration_page(conn):
                                     if not item_idx.empty: latest_settings_df.loc[item_idx, "已報名數"] += 1
                                 conn.update(worksheet="Settings", data=latest_settings_df)
                                 
-                            st.session_state["reg_success_msg"] = "🎉 加選成功！請留意叫號廣播。"
-                            st.session_state["add_form_key"] += 1
-                            st.rerun()
-
-    elif mode == "🔄 已做完兩項，加選服務項目":
-        try:
-            reg_df = conn.read(worksheet="Registration", ttl=0)
-            queue_df = conn.read(worksheet="Queue", ttl=0)
-        except Exception:
-            st.warning("目前尚無名單。")
-            return
-            
-        if reg_df.empty:
-            st.warning("目前尚無人報名，無法加選。")
-            return
-
-        name_list = reg_df["姓名"].dropna().unique().tolist()
-        old_name = st.selectbox("請選擇您的姓名", [""] + name_list)
-        
-        if old_name:
-            user_queues = queue_df[queue_df["姓名"] == old_name]
-            unfinished = user_queues[user_queues["狀態"] != "完成"]
-            
-            if not unfinished.empty:
-                unfinished_items = unfinished["體驗站點"].tolist()
-                st.error(f"⚠️ 系統檢查到您還有尚未完成的項目：【{', '.join(unfinished_items)}】\n\n請先將目前的項目體驗「完成」後再來加選喔！")
-            else:
-                done_items = user_queues["體驗站點"].dropna().tolist()
-                st.info(f"✅ 您已經完成的項目：{', '.join(done_items)}")
-                new_available = [x for x in available_options if x not in done_items]
-                
-                with st.form(f"add_more_form_{st.session_state['add_form_key']}", clear_on_submit=False):
-                    new_items = st.multiselect("請選擇想加選的體驗項目 (最多 2 項)", new_available, max_selections=2)
-                    submit_add = st.form_submit_button("確認加選", type="primary")
-                    
-                    if submit_add:
-                        if not new_items:
-                            st.error("請至少選擇一項！")
-                        else:
-                            st.toast("🔄 正在為您處理，請稍候...")
-                            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            orig_serial = reg_df[reg_df["姓名"] == old_name].iloc[0]["報到序號"]
-                            
-                            new_queue_rows = []
-                            for item in new_items:
-                                station_data = queue_df[queue_df["體驗站點"] == item]
-                                station_data["站點序號"] = pd.to_numeric(station_data["站點序號"], errors='coerce').fillna(0)
-                                max_seq = station_data["站點序號"].max() if not station_data.empty else 0
-                                current_station_seq = int(max_seq) + 1
+                                increment_db_version() # 加選成功，觸發廣播器！
                                 
-                                new_queue_rows.append({
-                                    "報到序號": orig_serial, "站點序號": current_station_seq,
-                                    "姓名": old_name, "體驗站點": item, "狀態": "等待中", "報名時間": current_time
-                                })
-                            queue_df = pd.concat([queue_df, pd.DataFrame(new_queue_rows)], ignore_index=True)
-                            conn.update(worksheet="Queue", data=queue_df)
-                            
-                            target_idx = reg_df[reg_df["姓名"] == old_name].index[0]
-                            old_str = str(reg_df.loc[target_idx, "報名項目"])
-                            reg_df.loc[target_idx, "報名項目"] = old_str + "、" + "、".join(new_items)
-                            conn.update(worksheet="Registration", data=reg_df)
-                            
-                            latest_settings_df = conn.read(worksheet="Settings", ttl=0)
-                            for item in new_items:
-                                item_idx = latest_settings_df[latest_settings_df["項目名稱"] == item].index
-                                if not item_idx.empty: latest_settings_df.loc[item_idx, "已報名數"] += 1
-                            conn.update(worksheet="Settings", data=latest_settings_df)
-                            
                             st.session_state["reg_success_msg"] = "🎉 加選成功！請留意叫號廣播。"
                             st.session_state["add_form_key"] += 1
                             st.rerun()
@@ -301,7 +240,6 @@ def render_calling_station_fragment(conn, current_station):
         del st.session_state["pending_audio"]
 
     try:
-        # 讀取全表以避免覆蓋遺失已完成資料
         queue_df = conn.read(worksheet="Queue", ttl=0)
     except Exception:
         st.warning("無法讀取排隊資料。")
@@ -312,8 +250,6 @@ def render_calling_station_fragment(conn, current_station):
         return
 
     queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors='coerce').fillna(0).astype(int)
-    
-    # 僅顯示未完成名單
     mask_active = (queue_df["體驗站點"] == current_station) & (queue_df["狀態"] != "完成")
     display_queue = queue_df[mask_active].sort_values(by="站點序號").copy()
 
@@ -350,8 +286,7 @@ def render_calling_station_fragment(conn, current_station):
                 if not waiting_df.empty:
                     next_p = waiting_df.iloc[0]
                     idx = queue_df[(queue_df["站點序號"] == next_p["站點序號"]) & (queue_df["體驗站點"] == current_station)].index[0]
-                    queue_df.loc[idx, "狀態"] = "服務中"
-                    conn.update(worksheet="Queue", data=queue_df)
+                    fast_update_queue_status(conn, idx, "服務中", queue_df) # 內含更新廣播器
                     
                     st.session_state["pending_audio"] = f"來賓 {next_p['站點序號']} 號 {next_p['姓名']}，{next_p['姓名']} 請到 {current_station} 處報到。"
                     st.rerun(scope="fragment")
@@ -371,8 +306,7 @@ def render_calling_station_fragment(conn, current_station):
             if not serving_df.empty:
                 p = serving_df.iloc[0]
                 idx = queue_df[(queue_df["站點序號"] == p["站點序號"]) & (queue_df["體驗站點"] == current_station)].index[0]
-                queue_df.loc[idx, "狀態"] = "過號"
-                conn.update(worksheet="Queue", data=queue_df)
+                fast_update_queue_status(conn, idx, "過號", queue_df)
                 st.rerun(scope="fragment")
 
     with col4:
@@ -380,11 +314,32 @@ def render_calling_station_fragment(conn, current_station):
             if not serving_df.empty:
                 p = serving_df.iloc[0]
                 idx = queue_df[(queue_df["站點序號"] == p["站點序號"]) & (queue_df["體驗站點"] == current_station)].index[0]
-                queue_df.loc[idx, "狀態"] = "完成" 
-                conn.update(worksheet="Queue", data=queue_df) 
+                fast_update_queue_status(conn, idx, "完成", queue_df)
                 st.success(f"{p['姓名']} 已完成體驗。")
                 st.rerun(scope="fragment")
 
+    # 👇 這裡幫您把「過號重叫區」補回來了！
+    st.markdown("---")
+    st.write("### 🔁 過號重叫區")
+    missed_df = display_queue[display_queue["狀態"] == "過號"]
+    if not missed_df.empty:
+        missed_options = [f"第{int(row['站點序號'])}號 - {row['姓名']}" for idx, row in missed_df.iterrows()]
+        selected_missed = st.selectbox("請選擇要重叫的過號民眾：", missed_options)
+        
+        if st.button("🔊 過號重叫", use_container_width=True):
+            if not serving_df.empty:
+                st.warning("⚠️ 目前已有服務中名單，請先完成。")
+            else:
+                missed_seq = int(selected_missed.split("號")[0].replace("第", ""))
+                target_idx = queue_df[(queue_df["站點序號"] == missed_seq) & (queue_df["體驗站點"] == current_station)].index[0]
+                fast_update_queue_status(conn, target_idx, "服務中", queue_df) # 內含更新廣播器
+                name = queue_df.loc[target_idx, "姓名"]
+                st.session_state["pending_audio"] = f"來賓 {missed_seq} 號 {name}，{name} 請到 {current_station} 處報到。"
+                st.rerun(scope="fragment")
+    else:
+        st.info("目前無過號名單。")
+
+    st.markdown("---")
     with st.expander("🔙 誤觸完成還原區"):
         done_df = queue_df[(queue_df["體驗站點"] == current_station) & (queue_df["狀態"] == "完成")]
         if not done_df.empty:
@@ -392,8 +347,7 @@ def render_calling_station_fragment(conn, current_station):
             if st.button("還原為等待中"):
                 u_seq = int(selected_undo.split("號")[0])
                 u_idx = queue_df[(queue_df["站點序號"] == u_seq) & (queue_df["體驗站點"] == current_station)].index[0]
-                queue_df.loc[u_idx, "狀態"] = "等待中"
-                conn.update(worksheet="Queue", data=queue_df)
+                fast_update_queue_status(conn, u_idx, "等待中", queue_df) # 內含更新廣播器
                 st.rerun(scope="fragment")
         else:
             st.caption("目前無已完成名單。")
@@ -415,27 +369,38 @@ def render_calling_page(conn):
     render_calling_station_fragment(conn, current_station)
 
 # ==========================================
-# 模組 5：民眾體驗顯示螢幕 (大螢幕 - 純手動版)
+# 模組 5：民眾體驗顯示螢幕 (大螢幕 - 智慧全域連動版)
 # ==========================================
-def render_display_grid(conn):
-    try:
-        try:
-            queue_df = conn.query('SELECT * FROM "Queue" WHERE "狀態" != \'完成\'', ttl=0)
-        except Exception:
-            queue_df = conn.read(worksheet="Queue", ttl=0)
-        settings_df = conn.read(worksheet="Settings", ttl=60)
-    except Exception:
-        st.warning("無法讀取資料庫。")
+# 【智慧連動】：以極高頻率(3秒)運行，但只有在全域廣播器數字改變時，才會去連線 Google
+@st.fragment(run_every=3)
+def render_display_grid(conn, auto_refresh_enabled):
+    # 若沒有勾選連動，就直接停止執行此片段
+    if not auto_refresh_enabled:
         return
+
+    # 取得目前的「全域資料庫版本號」
+    global_v = get_global_state()["db_version"]
+    local_v = st.session_state.get("display_cache_version", -1)
+
+    # 核心邏輯：版本不同，代表有人更新了資料，才去 Google 抓取
+    if global_v != local_v or "cached_queue_df" not in st.session_state:
+        try:
+            queue_df = conn.read(worksheet="Queue", ttl=0)
+            settings_df = conn.read(worksheet="Settings", ttl=0)
+            st.session_state["cached_queue_df"] = queue_df
+            st.session_state["cached_settings_df"] = settings_df
+            st.session_state["display_cache_version"] = global_v
+        except Exception:
+            st.warning("無法讀取資料庫。")
+            return
+    else:
+        # 版本相同，直接使用記憶體中快取的資料 (0 API 消耗！)
+        queue_df = st.session_state["cached_queue_df"]
+        settings_df = st.session_state["cached_settings_df"]
         
     if settings_df.empty or queue_df.empty:
         st.info("目前無資料。")
         return
-
-    current_hash = hashlib.md5(pd.util.hash_pandas_object(queue_df).values).hexdigest()
-    if st.session_state.get("last_display_hash") == current_hash:
-        pass 
-    st.session_state["last_display_hash"] = current_hash
 
     queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors='coerce').fillna(0).astype(int)
     stations = settings_df["項目名稱"].tolist()
@@ -489,12 +454,16 @@ def render_display_page(conn):
     
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.caption("⏸️ 目前設定為：純手動更新")
+        # 您要求的勾選開關！勾選才會啟用智慧連動
+        auto_refresh = st.checkbox("⚡ 啟用智慧連動 (有人叫號/報名時，自動瞬間更新)", value=True)
     with col_b:
         if st.button("🔄 手動重新整理", use_container_width=True):
             st.rerun()
+            
+    if auto_refresh:
+        st.caption("✅ 智慧連動運作中：目前待機 0 流量耗損。")
     
-    render_display_grid(conn)
+    render_display_grid(conn, auto_refresh)
 
 # ==========================================
 # 模組 2：體驗項目與名額設定 (後台)
@@ -532,6 +501,7 @@ def render_settings_page(conn):
                         new_row = pd.DataFrame({"項目名稱": [new_item], "老師名單": [teachers_str], "總名額": [new_quota], "已報名數": [0]})
                         df = pd.concat([df, new_row], ignore_index=True)
                         conn.update(worksheet="Settings", data=df)
+                        increment_db_version() # 設定更新，觸發廣播器！
                         st.success(f"已成功新增【{new_item}】！")
                         st.rerun()
 
@@ -549,6 +519,7 @@ def render_settings_page(conn):
                         df.loc[target_idx, "老師名單"] = "、".join(edit_teachers)
                         df.loc[target_idx, "總名額"] = edit_quota
                         conn.update(worksheet="Settings", data=df)
+                        increment_db_version() # 設定更新，觸發廣播器！
                         st.success(f"【{edit_target}】已更新！")
                         st.rerun()
 
@@ -556,6 +527,7 @@ def render_settings_page(conn):
     edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
     if st.button("💾 儲存表格變更 (含刪除項目)", key="save_settings_table"):
         conn.update(worksheet="Settings", data=edited_df)
+        increment_db_version() # 設定更新，觸發廣播器！
         st.success("總覽表已更新！")
         st.rerun()
 
@@ -568,6 +540,7 @@ def render_settings_page(conn):
             if st.button("🔥 立即將所有報名數歸零", type="primary", use_container_width=True):
                 df["已報名數"] = 0
                 conn.update(worksheet="Settings", data=df)
+                increment_db_version() # 歸零，觸發廣播器！
                 st.success("✅ 所有項目的報名人數已成功歸零！")
                 time.sleep(1)
                 st.rerun()
