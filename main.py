@@ -93,8 +93,8 @@ def render_registration_page(conn):
                 phone = st.text_input("聯繫方式 *", placeholder="手機號碼或室內電話")
             with col2:
                 address = st.text_input("地址", placeholder="請輸入居住區域")
-                dao_status = st.radio("請問您是否有求過道？", ["無", "有"], horizontal=True)
-                source = st.selectbox("從哪裡得知活動訊息？", ["親友介紹", "網路宣傳", "DM海報", "佛堂公告", "其他"])
+                dao_status = st.radio("請問您是否有參加過求道開智慧的活動？", ["無", "有"], horizontal=True)
+                source = st.selectbox("從哪裡得知活動訊息？", ["親友介紹", "FB社團宣傳", "DM海報", "其他"])
             
             selected_items = st.multiselect("請選擇想體驗的項目 (最多選擇 2 項) *", options=available_options, max_selections=2)
             submit_button = st.form_submit_button("確認送出報名", type="primary")
@@ -310,7 +310,7 @@ def render_calling_station_fragment(conn, current_station):
                 st.rerun(scope="fragment")
 
     with col4:
-        if st.button("✅ 標記為「完成」", use_container_width=True):
+      if st.button("✅ 標記為「完成」", use_container_width=True):
             if not serving_df.empty:
                 p = serving_df.iloc[0]
                 idx = queue_df[(queue_df["站點序號"] == p["站點序號"]) & (queue_df["體驗站點"] == current_station)].index[0]
@@ -466,10 +466,18 @@ def render_display_page(conn):
     render_display_grid(conn, auto_refresh)
 
 # ==========================================
-# 模組 2：體驗項目與名額設定 (後台)
+# 模組 2：體驗項目與名額設定 (修復表單隱藏與無限讀取問題)
 # ==========================================
 def render_settings_page(conn):
     st.subheader("⚙️ 體驗項目與名額設定 (後台)")
+    
+    # 初始化備份解鎖狀態
+    if "has_exported_before_clear" not in st.session_state:
+        st.session_state["has_exported_before_clear"] = False
+
+    def unlock_clear_zone():
+        st.session_state["has_exported_before_clear"] = True
+
     try:
         df = conn.read(worksheet="Settings", ttl=0)
     except Exception:
@@ -488,7 +496,9 @@ def render_settings_page(conn):
 
     col1, col2 = st.columns(2)
     with col1:
-        with st.expander("➕ 新增體驗項目", expanded=False):
+        # 【修復 1】：將 expander 改為 container，表單就不會自動縮回去隱藏了
+        with st.container(border=True):
+            st.markdown("#### ➕ 新增體驗項目")
             with st.form("add_item_form", clear_on_submit=True):
                 new_item = st.text_input("項目名稱")
                 new_teachers = st.multiselect("老師名單", options=teacher_list)
@@ -501,13 +511,15 @@ def render_settings_page(conn):
                         new_row = pd.DataFrame({"項目名稱": [new_item], "老師名單": [teachers_str], "總名額": [new_quota], "已報名數": [0]})
                         df = pd.concat([df, new_row], ignore_index=True)
                         conn.update(worksheet="Settings", data=df)
-                        increment_db_version() # 設定更新，觸發廣播器！
+                        increment_db_version() 
                         st.success(f"已成功新增【{new_item}】！")
                         st.rerun()
 
     with col2:
         if not df.empty:
-            with st.expander("✏️ 編輯現有項目", expanded=False):
+            # 【修復 1】：將 expander 改為 container
+            with st.container(border=True):
+                st.markdown("#### ✏️ 編輯現有項目")
                 edit_target = st.selectbox("請選擇要修改的項目", df["項目名稱"].tolist())
                 target_idx = df[df["項目名稱"] == edit_target].index[0]
                 current_row = df.loc[target_idx]
@@ -519,7 +531,7 @@ def render_settings_page(conn):
                         df.loc[target_idx, "老師名單"] = "、".join(edit_teachers)
                         df.loc[target_idx, "總名額"] = edit_quota
                         conn.update(worksheet="Settings", data=df)
-                        increment_db_version() # 設定更新，觸發廣播器！
+                        increment_db_version() 
                         st.success(f"【{edit_target}】已更新！")
                         st.rerun()
 
@@ -527,23 +539,94 @@ def render_settings_page(conn):
     edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
     if st.button("💾 儲存表格變更 (含刪除項目)", key="save_settings_table"):
         conn.update(worksheet="Settings", data=edited_df)
-        increment_db_version() # 設定更新，觸發廣播器！
+        increment_db_version() 
         st.success("總覽表已更新！")
         st.rerun()
 
+    # --- 系統重置與強制備份區 ---
     st.markdown("---")
-    st.write("### 🚨 危險區域：名額重整")
+    st.write("### 🚨 系統重置與資料清理 (新場次準備)")
     with st.container(border=True):
-        st.warning("⚠️ 此操作會將「所有項目」的已報名人數重設為 0，請謹慎使用。")
-        confirm_reset = st.checkbox("我確定要將所有項目的報名人數歸零")
-        if confirm_reset:
-            if st.button("🔥 立即將所有報名數歸零", type="primary", use_container_width=True):
-                df["已報名數"] = 0
-                conn.update(worksheet="Settings", data=df)
-                increment_db_version() # 歸零，觸發廣播器！
-                st.success("✅ 所有項目的報名人數已成功歸零！")
-                time.sleep(1)
-                st.rerun()
+        st.info("💡 **強制備份機制**：為保護資料，系統規定【必須先下載備份】才能解鎖清除功能。")
+        
+        # 【修復 2】：兩段式備份按鈕，按下去才讀資料庫，不再浪費流量
+        col_prep, col_dl = st.columns([1, 1])
+        with col_prep:
+            if st.button("📦 1. 撈取最新資料並準備備份", use_container_width=True):
+                with st.spinner("正在從資料庫撈取最新資料..."):
+                    try:
+                        reg_df_backup = conn.read(worksheet="Registration", ttl=0)
+                    except Exception:
+                        reg_df_backup = pd.DataFrame()
+                        
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        reg_df_backup.to_excel(writer, index=False)
+                    # 將產生的檔案暫存在 session_state 中
+                    st.session_state["backup_excel_data"] = output.getvalue()
+                    st.success("✅ 備份檔準備完成！請點擊右方按鈕下載。")
+
+        with col_dl:
+            # 只有當檔案準備好後，才會秀出下載按鈕
+            if "backup_excel_data" in st.session_state:
+                st.download_button(
+                    label="📥 2. 點我下載完整歷史紀錄 (備份並解鎖)", 
+                    data=st.session_state["backup_excel_data"], 
+                    file_name=f"活動備份_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    on_click=unlock_clear_zone,
+                    type="primary",
+                    use_container_width=True
+                )
+            else:
+                st.button("📥 2. 請先點擊左側準備備份", disabled=True, use_container_width=True)
+
+# 判斷是否已經解鎖
+        if st.session_state["has_exported_before_clear"]:
+            st.markdown("---")
+            st.success("✅ 備份已完成！清除功能已解鎖。")
+            st.warning("⚠️ 以下操作將直接清空雲端資料，且無法復原，請謹慎勾選。")
+            
+            # 【修復】：使用 st.form 將所有勾選項打包，等按下按鈕才一次執行，避免網頁一直閃爍
+            with st.form("reset_data_form"):
+                clear_queue = st.checkbox("🗑️ 1. 刪除所有「排隊叫號」名單 (清除 Queue 資料)")
+                clear_settings = st.checkbox("🔄 2. 將項目總覽的「老師名單」清空，並將「已報名數」歸零")
+                clear_reg = st.checkbox("🗑️ 3. 刪除所有「民眾報名歷史紀錄」 (清除 Registration 資料)")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                confirm_reset = st.checkbox("✅ 我已確認並了解以上勾選的操作將無法復原")
+                
+                # 將原本的 st.button 改成 st.form_submit_button
+                submit_reset = st.form_submit_button("🔥 立即執行重置", type="primary", use_container_width=True)
+                
+                if submit_reset:
+                    if not confirm_reset:
+                        st.error("⚠️ 請勾選「我已確認並了解以上勾選的操作將無法復原」才能執行！")
+                    elif not (clear_queue or clear_settings or clear_reg):
+                        st.error("⚠️ 您沒有勾選任何要清除的項目喔！")
+                    else:
+                        if clear_queue:
+                            empty_queue = pd.DataFrame(columns=["報到序號", "站點序號", "姓名", "體驗站點", "狀態", "報名時間"])
+                            conn.update(worksheet="Queue", data=empty_queue)
+                        
+                        if clear_settings:
+                            df["老師名單"] = ""
+                            df["已報名數"] = 0
+                            conn.update(worksheet="Settings", data=df)
+                        
+                        if clear_reg:
+                            empty_reg = pd.DataFrame(columns=["報到序號", "姓名", "年齡", "聯繫方式", "地址", "報名項目", "有無求道", "得知管道", "報名時間", "成全進度"])
+                            conn.update(worksheet="Registration", data=empty_reg)
+                        
+                        increment_db_version() 
+                        st.session_state["has_exported_before_clear"] = False # 自動上鎖
+                        if "backup_excel_data" in st.session_state:
+                            del st.session_state["backup_excel_data"] # 清除記憶體暫存
+                        st.success("✨ 系統重置成功！已準備好迎接下一場活動。")
+                        time.sleep(1.5)
+                        st.rerun()
+        else:
+            st.error("🔒 清除功能目前鎖定中。請先點擊上方按鈕下載備份！")
 
 # ==========================================
 # 模組 4：任務與職務管理 (後台)
@@ -772,6 +855,7 @@ def main():
         elif choice == "　└ 任務與職務管理 (後台)": render_task_page(conn)
         else: st.info("👈 這裡是分類標題，請點擊下方的子項目進入對應頁面。")
 
+    # 👇 這裡的對齊非常關鍵，它們都在 def main(): 裡面 (前面有 4 個空白)
     st.sidebar.markdown("---")
     if not is_admin:
         with st.sidebar.expander("🔐 工作人員入口", expanded=False):
@@ -779,15 +863,17 @@ def main():
                 pwd = st.text_input("請輸入密碼解鎖後台", type="password")
                 submit_login = st.form_submit_button("確認登入", use_container_width=True)
                 if submit_login:
-                    if pwd == "1234":
+                    if pwd == "10151015":
                         st.session_state["is_admin"] = True
                         st.rerun() 
-                    else: st.error("密碼錯誤")
+                    else: 
+                        st.error("密碼錯誤")
     else:
         st.sidebar.success("✅ 管理員已登入")
         if st.sidebar.button("🚪 登出並隱藏後台", use_container_width=True):
             st.session_state["is_admin"] = False
             st.rerun()
 
+# 👇 這個必須靠最左邊，完全沒有空白！
 if __name__ == '__main__':
     main()
