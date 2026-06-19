@@ -71,11 +71,7 @@ def render_self_select_page(conn):
 # Step 1：身分驗證
 # ─────────────────────────────────────────
 def _render_verify(conn):
-    today  = _today()
     reg_df = safe_read(conn, "Registration", ttl=5, default_cols=REG_COLS)
-    # 只保留當天報名的人
-    if not reg_df.empty:
-        reg_df = reg_df[reg_df["報名時間"].astype(str).str.startswith(today, na=False)]
     names  = sorted(reg_df["姓名"].astype(str).str.strip().unique().tolist()) if not reg_df.empty else []
 
     with st.form("self_verify_form"):
@@ -94,7 +90,7 @@ def _render_verify(conn):
 
         person = _verify(reg_df, name.strip(), phone.strip())
         if person is None:
-            st.error("❌ 查無今日報名紀錄，請確認姓名與手機號碼，或洽詢工作人員。")
+            st.error("❌ 查無報名紀錄，請確認姓名與手機號碼，或洽詢工作人員。")
             return
 
         serial = int(pd.to_numeric(person["報到序號"], errors="coerce"))
