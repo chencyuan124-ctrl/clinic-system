@@ -55,9 +55,10 @@ def _render_display_grid(conn, auto_refresh: bool):
         current_key = None
         if not serving.empty:
             p = serving.iloc[0]
-            current_key = (int(p["站點序號"]), str(p["姓名"]))
+            # 納入 報名時間 — 「再次呼叫」會更新此欄，觸發重新播音
+            current_key = (int(p["站點序號"]), str(p["姓名"]), str(p.get("報名時間", "")))
         if not is_first_run and current_key and current_key != prev.get(station):
-            seq, name = current_key
+            seq, name, _ = current_key
             autoplay_audio(f"來賓 {seq} 號 {name}，{name} 請到 {station} 處報到。")
         prev[station] = current_key
     st.session_state["prev_serving_init"] = True

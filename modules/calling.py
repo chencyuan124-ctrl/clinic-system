@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
+import datetime
 from utils import (
-    autoplay_audio, fast_update_queue_status, safe_read,
+    fast_update_queue_status, safe_read,
     _open_spreadsheet, _fetch_from_gas, increment_db_version,
     QUEUE_COLS, SET_COLS,
     STATUS_WAITING, STATUS_SERVING, STATUS_DONE, STATUS_MISSED,
@@ -62,8 +63,6 @@ def _stat_card(col, label: str, value: int, color: str):
 
 @st.fragment
 def _render_calling_fragment(conn, current_station: str):
-    if "pending_audio" in st.session_state:
-        autoplay_audio(st.session_state.pop("pending_audio"))
 
     queue_df = safe_read(conn, "Queue", ttl=0, default_cols=QUEUE_COLS)
     if queue_df.empty:
@@ -120,10 +119,6 @@ def _render_calling_fragment(conn, current_station: str):
                     (queue_df["狀態"] == STATUS_WAITING)
                 ].index[0]
                 fast_update_queue_status(conn, idx, STATUS_SERVING, queue_df)
-                st.session_state["pending_audio"] = (
-                    f"來賓 {nxt['站點序號']} 號 {nxt['姓名']}，"
-                    f"{nxt['姓名']} 請到 {current_station} 處報到。"
-                )
                 st.rerun(scope="fragment")
             else:
                 st.info("目前沒有等待中的民眾。")
@@ -132,10 +127,20 @@ def _render_calling_fragment(conn, current_station: str):
         if st.button("📢 再次呼叫", use_container_width=True):
             if not serving_df.empty:
                 p = serving_df.iloc[0]
-                autoplay_audio(
-                    f"來賓 {p['站點序號']} 號 {p['姓名']}，"
-                    f"{p['姓名']} 請到 {current_station} 處報到。"
-                )
+                # 更新 Queue 的報名時間 → 觸發顯示螢幕偵測到變化後重新播音
+                s_idx = queue_df[
+                    (queue_df["站點序號"] == p["站點序號"]) &
+                    (queue_df["體驗站點"] == current_station) &
+                    (queue_df["狀態"] == STATUS_SERVING)
+                ].index[0]
+                new_ts   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ss       = _open_spreadsheet()
+                ws       = ss.worksheet("Queue")
+                time_col = list(queue_df.columns).index("報名時間") + 1
+                ws.update_cell(int(s_idx) + 2, time_col, new_ts)
+                increment_db_version()
+                _fetch_from_gas.clear()
+                st.rerun(scope="fragment")
             else:
                 st.warning("目前無服務中民眾。")
 
@@ -209,9 +214,6 @@ def _render_calling_fragment(conn, current_station: str):
             if serving_df.empty and max_pos == 1:
                 # 完全沒人等待也沒人服務：直接呼叫
                 fast_update_queue_status(conn, t_idx, STATUS_SERVING, queue_df)
-                st.session_state["pending_audio"] = (
-                    f"來賓 {seq} 號 {name}，{name} 請到 {current_station} 處報到。"
-                )
             else:
                 # 按指定順位插入等待佇列，重排此站序號
                 base_seq = int(serving_df.iloc[0]["站點序號"]) if not serving_df.empty else 0
