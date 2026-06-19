@@ -31,10 +31,15 @@ def autoplay_audio(text: str):
         tts.write_to_fp(fp)
         fp.seek(0)
         b64 = base64.b64encode(fp.read()).decode()
+        # 使用 JavaScript Audio API 播放：音訊物件存在 JS 記憶體，
+        # 不受 Streamlit fragment 重繪影響，可播到自然結束
         st.markdown(
-            f"""<audio autoplay="true" style="display:none;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-            </audio>""",
+            f"""<script>
+            (function() {{
+                var snd = new Audio("data:audio/mp3;base64,{b64}");
+                snd.play().catch(function(e) {{ console.warn("Audio play blocked:", e); }});
+            }})();
+            </script>""",
             unsafe_allow_html=True,
         )
     except Exception as e:
