@@ -15,7 +15,7 @@ def render_display_page(conn):
         unsafe_allow_html=True,
     )
 
-    col_a, col_b = st.columns([3, 1])
+    col_a, col_b, col_c = st.columns([3, 1, 1])
     with col_a:
         auto_refresh = st.checkbox("⚡ 啟用智慧連動（有人叫號時自動更新）", value=True)
     with col_b:
@@ -23,6 +23,17 @@ def render_display_page(conn):
             if "cached_queue_df" in st.session_state:
                 del st.session_state["cached_queue_df"]
             st.rerun()
+    with col_c:
+        audio_enabled = st.session_state.get("display_audio_enabled", False)
+        if audio_enabled:
+            if st.button("🔊 語音開啟中", use_container_width=True, type="primary"):
+                st.session_state["display_audio_enabled"] = False
+                st.rerun()
+        else:
+            if st.button("🔇 點此啟用語音", use_container_width=True):
+                # 此按鈕點擊本身就是 user gesture，解鎖 Chrome 的 Autoplay Policy
+                st.session_state["display_audio_enabled"] = True
+                st.rerun()
 
     if auto_refresh:
         st.caption("✅ 自動更新中，每 5 秒從資料庫讀取最新狀態。")
@@ -47,6 +58,9 @@ def _render_audio_check(conn, auto_refresh: bool):
 
     queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors="coerce").fillna(0).astype(int)
     stations = settings_df["項目名稱"].tolist()
+
+    if not st.session_state.get("display_audio_enabled", False):
+        return  # 用戶尚未點擊啟用語音，不播
 
     prev         = st.session_state.setdefault("prev_serving", {})
     is_first_run = "prev_serving_init" not in st.session_state

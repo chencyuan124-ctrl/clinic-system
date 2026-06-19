@@ -12,6 +12,10 @@ from utils import (
 def render_calling_page(conn):
     st.subheader("📢 叫號操作台")
 
+    # 語音在 fragment 外播放：fragment rerun 不會移除外層頁面的 <audio> 元素
+    if "calling_audio" in st.session_state:
+        autoplay_audio(st.session_state.pop("calling_audio"))
+
     settings_df = safe_read(conn, "Settings", ttl=30, default_cols=SET_COLS)
     if settings_df.empty:
         st.info("請先至「體驗項目設定」頁面新增項目。")
@@ -119,8 +123,8 @@ def _render_calling_fragment(conn, current_station: str):
                     (queue_df["狀態"] == STATUS_WAITING)
                 ].index[0]
                 queue_df = fast_update_queue_status(conn, idx, STATUS_SERVING, queue_df)
-                autoplay_audio(f"來賓 {int(nxt['站點序號'])} 號 {nxt['姓名']}，{nxt['姓名']} 請到 {current_station} 處報到。")
-                st.rerun(scope="fragment")
+                st.session_state["calling_audio"] = f"來賓 {int(nxt['站點序號'])} 號 {nxt['姓名']}，{nxt['姓名']} 請到 {current_station} 處報到。"
+                st.rerun()  # full rerun → 外層頁面播音，fragment 更新資料
             else:
                 st.info("目前沒有等待中的民眾。")
 
@@ -141,8 +145,8 @@ def _render_calling_fragment(conn, current_station: str):
                 ws.update_cell(int(s_idx) + 2, time_col, new_ts)
                 increment_db_version()
                 _fetch_from_gas.clear()
-                autoplay_audio(f"來賓 {int(p['站點序號'])} 號 {p['姓名']}，{p['姓名']} 請到 {current_station} 處報到。")
-                st.rerun(scope="fragment")
+                st.session_state["calling_audio"] = f"來賓 {int(p['站點序號'])} 號 {p['姓名']}，{p['姓名']} 請到 {current_station} 處報到。"
+                st.rerun()  # full rerun → 外層頁面播音
             else:
                 st.warning("目前無服務中民眾。")
 
