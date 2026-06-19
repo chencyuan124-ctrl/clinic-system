@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 from utils import (
-    fast_update_queue_status, safe_read,
+    fast_update_queue_status, safe_read, autoplay_audio,
     _open_spreadsheet, _fetch_from_gas, increment_db_version,
     QUEUE_COLS, SET_COLS,
     STATUS_WAITING, STATUS_SERVING, STATUS_DONE, STATUS_MISSED,
@@ -118,7 +118,8 @@ def _render_calling_fragment(conn, current_station: str):
                     (queue_df["體驗站點"] == current_station) &
                     (queue_df["狀態"] == STATUS_WAITING)
                 ].index[0]
-                fast_update_queue_status(conn, idx, STATUS_SERVING, queue_df)
+                queue_df = fast_update_queue_status(conn, idx, STATUS_SERVING, queue_df)
+                autoplay_audio(f"來賓 {int(nxt['站點序號'])} 號 {nxt['姓名']}，{nxt['姓名']} 請到 {current_station} 處報到。")
                 st.rerun(scope="fragment")
             else:
                 st.info("目前沒有等待中的民眾。")
@@ -140,6 +141,7 @@ def _render_calling_fragment(conn, current_station: str):
                 ws.update_cell(int(s_idx) + 2, time_col, new_ts)
                 increment_db_version()
                 _fetch_from_gas.clear()
+                autoplay_audio(f"來賓 {int(p['站點序號'])} 號 {p['姓名']}，{p['姓名']} 請到 {current_station} 處報到。")
                 st.rerun(scope="fragment")
             else:
                 st.warning("目前無服務中民眾。")
