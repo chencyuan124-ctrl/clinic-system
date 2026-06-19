@@ -22,10 +22,9 @@ def render_calling_page(conn):
     current_station = st.selectbox("請選擇您負責的服務站點：", station_options, index=default_idx)
     st.session_state["last_station"] = current_station
 
-    _render_stats_bar(conn, station_options)
-    st.markdown("---")
     _render_calling_fragment(conn, current_station)
     st.markdown("---")
+    _render_stats_bar(conn, station_options)
     _render_overview(conn, station_options)
 
 

@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from utils import safe_read, QUEUE_COLS, SET_COLS, STATUS_DONE
+from utils import safe_read, autoplay_audio, QUEUE_COLS, SET_COLS, STATUS_SERVING, STATUS_DONE
 
 
 def render_display_page(conn):
@@ -44,6 +44,23 @@ def _render_display_grid(conn, auto_refresh: bool):
 
     queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors="coerce").fillna(0).astype(int)
     stations = settings_df["項目名稱"].tolist()
+
+    # ── 語音叫號：偵測到新人變為服務中時自動播音 ──
+    prev = st.session_state.setdefault("prev_serving", {})
+    is_first_run = "prev_serving_init" not in st.session_state
+    for station in stations:
+        serving = queue_df[
+            (queue_df["體驗站點"] == station) & (queue_df["狀態"] == STATUS_SERVING)
+        ]
+        current_key = None
+        if not serving.empty:
+            p = serving.iloc[0]
+            current_key = (int(p["站點序號"]), str(p["姓名"]))
+        if not is_first_run and current_key and current_key != prev.get(station):
+            seq, name = current_key
+            autoplay_audio(f"來賓 {seq} 號 {name}，{name} 請到 {station} 處報到。")
+        prev[station] = current_key
+    st.session_state["prev_serving_init"] = True
 
     cols_per_row = 3 if len(stations) <= 3 else 4
     for i in range(0, len(stations), cols_per_row):
