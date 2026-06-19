@@ -15,10 +15,6 @@ def render_display_page(conn):
         unsafe_allow_html=True,
     )
 
-    # 在 fragment 之外播音：fragment 的 run_every 刷新不會中斷此處的 <audio> 標籤
-    if "display_audio_text" in st.session_state:
-        autoplay_audio(st.session_state.pop("display_audio_text"))
-
     col_a, col_b = st.columns([3, 1])
     with col_a:
         auto_refresh = st.checkbox("⚡ 啟用智慧連動（有人叫號時自動更新）", value=True)
@@ -31,7 +27,48 @@ def render_display_page(conn):
     if auto_refresh:
         st.caption("✅ 自動更新中，每 5 秒從資料庫讀取最新狀態。")
 
+    # 兩個獨立 fragment：各自擁有獨立輸出區域，互不干擾
+    # audio fragment 每 10 秒刷新一次，讓 4~5 秒的語音完整播完
+    _render_audio_check(conn, auto_refresh)
     _render_display_grid(conn, auto_refresh)
+
+
+@st.fragment(run_every=10)
+def _render_audio_check(conn, auto_refresh: bool):
+    """每 10 秒偵測服務中狀態，有新叫號時直接在此 fragment 輸出 <audio>。
+    display grid 每 5 秒刷新，但不會觸碰本 fragment 的輸出區，音訊不會被中斷。"""
+    if not auto_refresh:
+        return
+
+    queue_df    = safe_read(conn, "Queue",    default_cols=QUEUE_COLS)
+    settings_df = safe_read(conn, "Settings", default_cols=SET_COLS)
+    if queue_df.empty or settings_df.empty:
+        return
+
+    queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors="coerce").fillna(0).astype(int)
+    stations = settings_df["項目名稱"].tolist()
+
+    prev         = st.session_state.setdefault("prev_serving", {})
+    is_first_run = "prev_serving_init" not in st.session_state
+
+    for station in stations:
+        serving = queue_df[
+            (queue_df["體驗站點"] == station) & (queue_df["狀態"] == STATUS_SERVING)
+        ]
+        current_key = None
+        if not serving.empty:
+            p = serving.iloc[0]
+            current_key = (int(p["站點序號"]), str(p["姓名"]), str(p.get("報名時間", "")))
+
+        if not is_first_run and current_key and current_key != prev.get(station):
+            seq, name, _ = current_key
+            autoplay_audio(f"來賓 {seq} 號 {name}，{name} 請到 {station} 處報到。")
+            prev[station] = current_key
+            break  # 一次播一站，避免同時兩站叫號互相覆蓋
+
+        prev[station] = current_key
+
+    st.session_state["prev_serving_init"] = True
 
 
 @st.fragment(run_every=5)
@@ -48,31 +85,6 @@ def _render_display_grid(conn, auto_refresh: bool):
 
     queue_df["站點序號"] = pd.to_numeric(queue_df["站點序號"], errors="coerce").fillna(0).astype(int)
     stations = settings_df["項目名稱"].tolist()
-
-    # ── 語音叫號：偵測到新人變為服務中時，通知外層頁面播音 ──
-    # 語音在 fragment 外播放，避免被 run_every 刷新中斷
-    prev = st.session_state.setdefault("prev_serving", {})
-    is_first_run = "prev_serving_init" not in st.session_state
-    audio_text = None
-    for station in stations:
-        serving = queue_df[
-            (queue_df["體驗站點"] == station) & (queue_df["狀態"] == STATUS_SERVING)
-        ]
-        current_key = None
-        if not serving.empty:
-            p = serving.iloc[0]
-            # 納入 報名時間 — 「再次呼叫」會更新此欄，觸發重新播音
-            current_key = (int(p["站點序號"]), str(p["姓名"]), str(p.get("報名時間", "")))
-        if not is_first_run and current_key and current_key != prev.get(station):
-            if audio_text is None:  # 一次只播一句
-                seq, name, _ = current_key
-                audio_text = f"來賓 {seq} 號 {name}，{name} 請到 {station} 處報到。"
-        prev[station] = current_key
-    st.session_state["prev_serving_init"] = True
-
-    if audio_text:
-        st.session_state["display_audio_text"] = audio_text
-        st.rerun()  # 全頁刷新讓 render_display_page 在 fragment 外播音
 
     cols_per_row = 3 if len(stations) <= 3 else 4
     for i in range(0, len(stations), cols_per_row):
