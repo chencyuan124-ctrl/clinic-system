@@ -7,6 +7,7 @@ import io
 import base64
 import threading
 import requests
+import datetime
 from gtts import gTTS
 
 
@@ -82,7 +83,7 @@ def _fetch_from_gas(sheet_name: str, _cache_bust: int = 0) -> pd.DataFrame:
     """透過 GAS Web App 讀取工作表，所有使用者共用此快取。"""
     try:
         url = st.secrets["gas"]["read_url"]
-        resp = requests.get(url, params={"sheet": sheet_name}, timeout=15)
+        resp = requests.get(url, params={"sheet": sheet_name, "v": _cache_bust}, timeout=15)
         resp.raise_for_status()
         payload = resp.json()
         if "error" in payload:
@@ -108,14 +109,52 @@ def safe_read(conn, worksheet: str, ttl=30, default_cols: list = None) -> pd.Dat
         df = ensure_cols(df, default_cols)
     return df
 
+def append_service_log(log_rows: list):
+    """將事件紀錄 append 到 ServiceLog 工作表，失敗時靜默，不阻斷主流程。"""
+    if not log_rows:
+        return
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("ServiceLog")
+        values = [[r.get(c, "") for c in LOG_COLS] for r in log_rows]
+        ws.append_rows(values, value_input_option="USER_ENTERED")
+    except Exception:
+        pass
+
+
+_EVENT_MAP = {
+    (STATUS_WAITING, STATUS_SERVING): "CALLING",
+    (STATUS_SERVING, STATUS_DONE):    "DONE",
+    (STATUS_SERVING, STATUS_MISSED):  "MISSED",
+    (STATUS_DONE,    STATUS_WAITING): "UNDO_DONE",
+}
+
+
 def fast_update_queue_status(conn, target_idx, new_status: str, full_df: pd.DataFrame) -> pd.DataFrame:
     """只更新 Queue 裡單一列的狀態欄，不重寫整張表，避免舊資料覆蓋問題。"""
+    old_status = str(full_df.loc[target_idx, "狀態"])
+    row_data   = full_df.loc[target_idx]
+
     full_df.loc[target_idx, "狀態"] = new_status
     ss         = _open_spreadsheet()
     ws         = ss.worksheet("Queue")
     sheet_row  = int(target_idx) + 2          # 0-based index → 1-based + 1 header row
     status_col = list(full_df.columns).index("狀態") + 1  # 1-based column
     ws.update_cell(sheet_row, status_col, new_status)
+
+    now = datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    append_service_log([{
+        "事件時間": now,
+        "報到序號": row_data.get("報到序號", ""),
+        "姓名":     row_data.get("姓名", ""),
+        "體驗站點": row_data.get("體驗站點", ""),
+        "站點序號": row_data.get("站點序號", ""),
+        "事件類型": _EVENT_MAP.get((old_status, new_status), "STATUS_CHANGE"),
+        "前狀態":   old_status,
+        "後狀態":   new_status,
+        "備註":     "",
+    }])
+
     increment_db_version()
     _fetch_from_gas.clear()
     return full_df
@@ -124,7 +163,7 @@ def fast_update_queue_status(conn, target_idx, new_status: str, full_df: pd.Data
 # ── 欄位常數 ─────────────────────────────
 REG_COLS    = ["報到序號", "姓名", "年齡", "聯繫方式", "地址", "報名項目", "有無求道", "得知管道", "報名時間", "成全進度", "gform_timestamp"]
 QUEUE_COLS  = ["報到序號", "站點序號", "姓名", "體驗站點", "狀態", "報名時間"]
-SET_COLS    = ["項目名稱", "老師名單", "總名額", "已報名數"]
+SET_COLS    = ["項目名稱", "老師名單", "總名額", "已報名數", "服務人數"]
 TASK_COLS   = ["階段", "任務名稱", "負責人", "完成狀態"]
 ROLE_COLS   = ["姓名", "組別", "對應儲存格"]
 EQUIP_COLS  = ["器材名稱", "數量", "負責人", "取得位置", "準備狀態"]
@@ -134,4 +173,37 @@ STATUS_SERVING  = "服務中"
 STATUS_DONE     = "完成"
 STATUS_MISSED   = "過號"
 
+LOG_COLS = ["事件時間", "報到序號", "姓名", "體驗站點", "站點序號", "事件類型", "前狀態", "後狀態", "備註"]
+_TW_TZ   = datetime.timezone(datetime.timedelta(hours=8))
+
 PROGRESS_OPTIONS = ["初次接觸", "已參加活動", "有意願", "已求道", "穩定參與", "其他"]
+
+
+def call_next_slot(conn, station: str, teacher_count: int):
+    """
+    在全域 Lock 內重讀 Queue，確認服務槽有空才叫號。
+    回傳 (success: bool, nxt_row | None, updated_df)
+    競態保護：所有 session 共用同一個 Lock，後進者等待後重讀最新狀態。
+    """
+    with get_submit_lock():
+        fresh = safe_read(conn, "Queue", ttl=0, default_cols=QUEUE_COLS)
+        if fresh.empty:
+            return False, None, fresh
+        fresh["站點序號"] = pd.to_numeric(fresh["站點序號"], errors="coerce").fillna(0).astype(int)
+
+        serving = fresh[(fresh["體驗站點"] == station) & (fresh["狀態"] == STATUS_SERVING)]
+        waiting = fresh[(fresh["體驗站點"] == station) & (fresh["狀態"] == STATUS_WAITING)].sort_values("站點序號")
+
+        if len(serving) >= teacher_count:
+            return False, None, fresh
+        if waiting.empty:
+            return False, None, fresh
+
+        nxt = waiting.iloc[0]
+        nxt_idx = fresh[
+            (fresh["站點序號"] == nxt["站點序號"]) &
+            (fresh["體驗站點"] == station) &
+            (fresh["狀態"] == STATUS_WAITING)
+        ].index[0]
+        updated = fast_update_queue_status(conn, nxt_idx, STATUS_SERVING, fresh)
+        return True, nxt, updated

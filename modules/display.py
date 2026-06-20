@@ -87,9 +87,6 @@ def _render_audio_check(conn, auto_refresh: bool):
 
 @st.fragment(run_every=5)
 def _render_display_grid(conn, auto_refresh: bool):
-    if not auto_refresh:
-        return
-
     queue_df    = safe_read(conn, "Queue",    default_cols=QUEUE_COLS)
     settings_df = safe_read(conn, "Settings", default_cols=SET_COLS)
 
@@ -131,19 +128,22 @@ def _render_station_card(queue_df: pd.DataFrame, station: str):
         unsafe_allow_html=True,
     )
 
-    # ── 服務中卡片 ─────────────────────────
+    # ── 服務中卡片（支援多人同時服務）─────────
     if not serving.empty:
-        p = serving.iloc[0]
+        serving_html = ""
+        for _, p in serving.iterrows():
+            serving_html += (
+                f"<div style='text-align:center; padding:8px 0;'>"
+                f"<div style='color:rgba(255,255,255,0.85); font-size:0.85em;'>▶ 服務中</div>"
+                f"<div style='color:white; font-size:{3.0 if len(serving) == 1 else 2.2}em; font-weight:900; line-height:1.1;'>"
+                f"{p['站點序號']} 號</div>"
+                f"<div style='color:rgba(255,255,255,0.9); font-size:{1.6 if len(serving) == 1 else 1.2}em;'>"
+                f"{p['姓名']}</div></div>"
+                + ("" if _ == serving.index[-1] else "<hr style='border-color:rgba(255,255,255,0.3); margin:4px 0;'>")
+            )
         st.markdown(
             f"""<div style='background:linear-gradient(135deg,#27ae60,#2ecc71);
-            border-radius:0; padding:20px; text-align:center;'>
-            <div style='color:rgba(255,255,255,0.85); font-size:0.95em; margin-bottom:4px;'>
-            ▶ 服務中</div>
-            <div style='color:white; font-size:3.5em; font-weight:900; line-height:1.1;'>
-            {p['站點序號']} 號</div>
-            <div style='color:rgba(255,255,255,0.9); font-size:1.8em; margin-top:4px;'>
-            {p['姓名']}</div>
-            </div>""",
+            border-radius:0; padding:16px;'>{serving_html}</div>""",
             unsafe_allow_html=True,
         )
     else:

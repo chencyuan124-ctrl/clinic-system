@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import datetime
 from utils import (
-    fast_update_queue_status, safe_read, autoplay_audio,
-    _open_spreadsheet, _fetch_from_gas, increment_db_version,
+    fast_update_queue_status, safe_read, autoplay_audio, call_next_slot,
+    _open_spreadsheet, _fetch_from_gas, increment_db_version, append_service_log,
     QUEUE_COLS, SET_COLS,
     STATUS_WAITING, STATUS_SERVING, STATUS_DONE, STATUS_MISSED,
 )
@@ -27,7 +27,12 @@ def render_calling_page(conn):
     current_station = st.selectbox("請選擇您負責的服務站點：", station_options, index=default_idx)
     st.session_state["last_station"] = current_station
 
-    _render_calling_fragment(conn, current_station)
+    # 取得該站點的服務人數（多老師支援）
+    settings_df["服務人數"] = pd.to_numeric(settings_df.get("服務人數", 1), errors="coerce").fillna(1).astype(int)
+    row = settings_df[settings_df["項目名稱"] == current_station]
+    teacher_count = max(1, int(row.iloc[0]["服務人數"]) if not row.empty else 1)
+
+    _render_calling_fragment(conn, current_station, teacher_count)
     st.markdown("---")
     _render_stats_bar(conn, station_options)
     _render_overview(conn, station_options)
@@ -66,7 +71,7 @@ def _stat_card(col, label: str, value: int, color: str):
 
 
 @st.fragment
-def _render_calling_fragment(conn, current_station: str):
+def _render_calling_fragment(conn, current_station: str, teacher_count: int = 1):
 
     queue_df = safe_read(conn, "Queue", ttl=0, default_cols=QUEUE_COLS)
     if queue_df.empty:
@@ -80,6 +85,8 @@ def _render_calling_fragment(conn, current_station: str):
     waiting_df   = display_q[display_q["狀態"] == STATUS_WAITING]
     missed_df    = display_q[display_q["狀態"] == STATUS_MISSED]
 
+    slots_free = max(0, teacher_count - len(serving_df))
+
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.write(f"### 📍 【{current_station}】待處理名單")
@@ -87,16 +94,18 @@ def _render_calling_fragment(conn, current_station: str):
         if st.button("🔄 手動刷新", use_container_width=True):
             st.rerun(scope="fragment")
 
-    # 服務中橫幅
+    # 服務中橫幅（支援多人同時服務）
     if not serving_df.empty:
-        p = serving_df.iloc[0]
-        st.markdown(
-            f"""<div style='background:#d4edda; border:2px solid #28a745; border-radius:10px;
-            padding:12px 20px; margin-bottom:12px;'>
-            <span style='color:#155724; font-size:1.1em; font-weight:bold;'>
-            👨‍⚕️ 服務中：第 {p['站點序號']} 號 — {p['姓名']}</span></div>""",
-            unsafe_allow_html=True,
-        )
+        for _, p in serving_df.iterrows():
+            st.markdown(
+                f"""<div style='background:#d4edda; border:2px solid #28a745; border-radius:10px;
+                padding:12px 20px; margin-bottom:8px;'>
+                <span style='color:#155724; font-size:1.1em; font-weight:bold;'>
+                👨‍⚕️ 服務中：第 {p['站點序號']} 號 — {p['姓名']}</span></div>""",
+                unsafe_allow_html=True,
+            )
+        if teacher_count > 1:
+            st.caption(f"服務槽 {len(serving_df)}/{teacher_count}，空閒 {slots_free} 槽")
     else:
         st.info("💡 目前無人體驗，請點擊「呼叫下一位」。")
 
@@ -112,52 +121,73 @@ def _render_calling_fragment(conn, current_station: str):
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        if st.button("🔊 呼叫下一位", type="primary", use_container_width=True):
-            if not serving_df.empty:
-                st.warning("⚠️ 請先將目前服務中的民眾標記完成或過號。")
+        slots_full = len(serving_df) >= teacher_count
+        btn_label = "🔊 呼叫下一位" if not slots_full else f"🔊 呼叫下一位（槽已滿）"
+        if st.button(btn_label, type="primary", use_container_width=True, disabled=slots_full and waiting_df.empty):
+            if slots_full:
+                st.warning(f"⚠️ 所有 {teacher_count} 個服務槽已滿，請先標記完成或過號。")
             elif not waiting_df.empty:
-                nxt = waiting_df.iloc[0]
-                idx = queue_df[
-                    (queue_df["站點序號"] == nxt["站點序號"]) &
-                    (queue_df["體驗站點"] == current_station) &
-                    (queue_df["狀態"] == STATUS_WAITING)
-                ].index[0]
-                queue_df = fast_update_queue_status(conn, idx, STATUS_SERVING, queue_df)
-                st.session_state["calling_audio"] = f"來賓 {int(nxt['站點序號'])} 號 {nxt['姓名']}，{nxt['姓名']} 請到 {current_station} 處報到。"
-                st.rerun()  # full rerun → 外層頁面播音，fragment 更新資料
+                ok, nxt, _ = call_next_slot(conn, current_station, teacher_count)
+                if ok and nxt is not None:
+                    st.session_state["calling_audio"] = f"來賓 {int(nxt['站點序號'])} 號 {nxt['姓名']}，{nxt['姓名']} 請到 {current_station} 處報到。"
+                    st.rerun()
+                else:
+                    st.warning("⚠️ 叫號失敗，可能剛被他人搶先，請重新整理。")
             else:
                 st.info("目前沒有等待中的民眾。")
 
+    # 多人服務中時，用 selectbox 選擇操作對象
+    if len(serving_df) > 1:
+        serving_options = [f"第{int(r['站點序號'])}號 {r['姓名']}" for _, r in serving_df.iterrows()]
+        sel_serving = st.selectbox("選擇操作對象（再次呼叫/過號/完成）：", serving_options, key=f"sel_serving_{current_station}")
+        sel_seq = int(sel_serving.split("號")[0].replace("第", ""))
+        sel_row = serving_df[serving_df["站點序號"] == sel_seq].iloc[0]
+    else:
+        sel_row = serving_df.iloc[0] if not serving_df.empty else None
+        sel_seq = int(sel_row["站點序號"]) if sel_row is not None else None
+
     with c2:
         if st.button("📢 再次呼叫", use_container_width=True):
-            if not serving_df.empty:
-                p = serving_df.iloc[0]
+            if not serving_df.empty and sel_row is not None:
+                p = sel_row
                 # 更新 Queue 的報名時間 → 觸發顯示螢幕偵測到變化後重新播音
                 s_idx = queue_df[
-                    (queue_df["站點序號"] == p["站點序號"]) &
+                    (queue_df["站點序號"] == sel_seq) &
                     (queue_df["體驗站點"] == current_station) &
                     (queue_df["狀態"] == STATUS_SERVING)
                 ].index[0]
-                new_ts   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _TW_TZ = datetime.timezone(datetime.timedelta(hours=8))
+                new_ts   = datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
                 ss       = _open_spreadsheet()
                 ws       = ss.worksheet("Queue")
                 time_col = list(queue_df.columns).index("報名時間") + 1
                 ws.update_cell(int(s_idx) + 2, time_col, new_ts)
                 increment_db_version()
                 _fetch_from_gas.clear()
+                _TW_TZ = datetime.timezone(datetime.timedelta(hours=8))
+                append_service_log([{
+                    "事件時間": datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    "報到序號": p.get("報到序號", ""),
+                    "姓名":     p["姓名"],
+                    "體驗站點": current_station,
+                    "站點序號": p["站點序號"],
+                    "事件類型": "RECALL",
+                    "前狀態":   STATUS_SERVING,
+                    "後狀態":   STATUS_SERVING,
+                    "備註":     "再次呼叫",
+                }])
                 st.session_state["calling_audio"] = f"來賓 {int(p['站點序號'])} 號 {p['姓名']}，{p['姓名']} 請到 {current_station} 處報到。"
                 st.rerun()  # full rerun → 外層頁面播音
             else:
                 st.warning("目前無服務中民眾。")
 
     with c3:
-        if not serving_df.empty:
-            p = serving_df.iloc[0]
+        if not serving_df.empty and sel_row is not None:
             confirm_key = f"confirm_missed_{current_station}"
             if st.session_state.get(confirm_key):
                 if st.button("❗ 確認過號", use_container_width=True, type="primary"):
                     idx = queue_df[
-                        (queue_df["站點序號"] == p["站點序號"]) &
+                        (queue_df["站點序號"] == sel_seq) &
                         (queue_df["體驗站點"] == current_station) &
                         (queue_df["狀態"] == STATUS_SERVING)
                     ].index[0]
@@ -172,13 +202,12 @@ def _render_calling_fragment(conn, current_station: str):
             st.button("⏭️ 標記過號", use_container_width=True, disabled=True)
 
     with c4:
-        if not serving_df.empty:
-            p = serving_df.iloc[0]
+        if not serving_df.empty and sel_row is not None:
             confirm_key = f"confirm_done_{current_station}"
             if st.session_state.get(confirm_key):
                 if st.button("❗ 確認完成", use_container_width=True, type="primary"):
                     idx = queue_df[
-                        (queue_df["站點序號"] == p["站點序號"]) &
+                        (queue_df["站點序號"] == sel_seq) &
                         (queue_df["體驗站點"] == current_station) &
                         (queue_df["狀態"] == STATUS_SERVING)
                     ].index[0]
@@ -241,6 +270,18 @@ def _render_calling_fragment(conn, current_station: str):
                 ws.update(data, value_input_option="USER_ENTERED")
                 increment_db_version()
                 _fetch_from_gas.clear()
+                _TW_TZ = datetime.timezone(datetime.timedelta(hours=8))
+                append_service_log([{
+                    "事件時間": datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    "報到序號": queue_df.loc[t_idx].get("報到序號", ""),
+                    "姓名":     name,
+                    "體驗站點": current_station,
+                    "站點序號": seq,
+                    "事件類型": "RECALL_REQUEUE",
+                    "前狀態":   STATUS_MISSED,
+                    "後狀態":   STATUS_WAITING,
+                    "備註":     f"插入順位 {pos}",
+                }])
                 st.toast(f"✅ {name} 已排入第 {pos} 順位", icon="🔁")
 
             st.rerun(scope="fragment")

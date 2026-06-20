@@ -14,6 +14,7 @@ from modules.full_queue    import render_full_queue_page
 from modules.stats         import render_stats_page
 from modules.public_form   import render_public_form
 from modules.self_select   import render_self_select_page
+from modules.station       import render_station_page
 
 st.set_page_config(page_title="身心靈保健活動系統", page_icon="💆", layout="wide")
 
@@ -38,6 +39,7 @@ def main():
     def page_display():       render_display_page(conn)
     def page_public_form():   render_public_form(conn)
     def page_self_select():   render_self_select_page(conn)
+    def page_station():       render_station_page(conn)
     def page_register():      render_registration_page(conn)
     def page_calling():      render_calling_page(conn)
     def page_full_queue():   render_full_queue_page(conn)
@@ -51,6 +53,7 @@ def main():
         pages = {
             "📺 顯示專區": [st.Page(page_display,     title="民眾體驗顯示螢幕（大螢幕）")],
             "✋ 自助選項": [st.Page(page_self_select, title="自助選取體驗項目（民眾）")],
+            "🏥 站點服務台": [st.Page(page_station,   title="站點服務台（老師操作）")],
         }
         if is_admin:
             pages["📋 掛號分配（後台）"] = [

@@ -2,11 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 from utils import safe_read, format_phone, REG_COLS, QUEUE_COLS, SET_COLS
-from modules.registration import get_active_count, get_today_items, do_assign
-
-
-def _today() -> str:
-    return datetime.date.today().strftime("%Y-%m-%d")
+from modules.registration import get_active_count, get_today_items, do_assign, _today, _tw_date
 
 
 def _normalize_phone(val: str) -> str:
@@ -226,7 +222,7 @@ def _item_is_done(queue_df, serial, item, today):
     rows = q[
         (q["報到序號"] == serial) &
         (q["體驗站點"] == item) &
-        (q["報名時間"].astype(str).str.startswith(today, na=False))
+        (q["報名時間"].apply(_tw_date) == today)
     ]
     if rows.empty:
         return False
