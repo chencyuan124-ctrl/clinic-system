@@ -126,6 +126,22 @@ def _render_select(conn):
     used_items   = get_today_items(queue_df, serial, today)
     slots        = 2 - active_count
 
+    # ── 診斷輸出（找 bug 用，完成後移除） ──
+    with st.expander("🔍 診斷資訊（除錯用）", expanded=True):
+        st.write(f"**serial:** `{serial}` (type={type(serial).__name__})")
+        st.write(f"**today:** `{today}`")
+        st.write(f"**used_items:** `{used_items}`")
+        st.write(f"**active_count:** `{active_count}`")
+        if not queue_df.empty:
+            person_rows = queue_df[pd.to_numeric(queue_df["報到序號"], errors="coerce") == serial]
+            st.write(f"**Queue 此人所有紀錄（共 {len(person_rows)} 筆）：**")
+            st.dataframe(person_rows, use_container_width=True)
+            st.write(f"**Queue 報名時間 raw sample（前5筆）：**")
+            st.write(queue_df["報名時間"].head(5).tolist())
+        else:
+            st.write("**Queue 是空的！**")
+    # ── 診斷輸出結束 ──
+
     # 顯示目前狀態
     if used_items:
         done_items   = [i for i in used_items if _item_is_done(queue_df, serial, i, today)]
