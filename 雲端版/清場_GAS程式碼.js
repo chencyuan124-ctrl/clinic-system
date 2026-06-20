@@ -3,6 +3,11 @@
 // 貼到 Google Sheet 的 Apps Script 編輯器
 // ==========================================
 
+var URL_SYSTEM  = "https://mbshcc.streamlit.app/";
+var URL_SHEET   = "https://docs.google.com/spreadsheets/d/1yYWTlQ6qTOz-7R9w8tMo292oAvRP6yi8oFSugXbzXYQ";
+var URL_GAS     = "https://script.google.com/macros/s/AKfycbxneDWtFzXsmGzPKVYxkRqP1bW_5-y25OWdc1VJS3eZNBHZge6NNnclvXzWgoy3diOt/exec";
+var URL_FORM    = "https://forms.gle/si5W6w8dPkCLzYEb9";
+
 // 建立自訂選單
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -14,8 +19,25 @@ function onOpen() {
     .addItem("🗑️ 清除報名歷史 (Registration)", "clearRegistration")
     .addSeparator()
     .addItem("🔥 一鍵全部重置（新場次）", "resetAll")
+    .addSeparator()
+    .addItem("🖥️ 開啟掛號系統", "openSystem")
+    .addItem("📊 開啟義診資料庫", "openSheet")
+    .addItem("⚙️ 開啟 GAS 登入系統", "openGas")
+    .addItem("📝 開啟現場報名表單", "openForm")
     .addToUi();
 }
+
+// ── 快速連結 ──────────────────────────────
+function _openUrl(url) {
+  var html = HtmlService.createHtmlOutput(
+    '<script>window.open("' + url + '"); google.script.host.close();</script>'
+  ).setWidth(10).setHeight(10);
+  SpreadsheetApp.getUi().showModalDialog(html, "開啟中...");
+}
+function openSystem() { _openUrl(URL_SYSTEM); }
+function openSheet()  { _openUrl(URL_SHEET);  }
+function openGas()    { _openUrl(URL_GAS);    }
+function openForm()   { _openUrl(URL_FORM);   }
 
 // ── 查看摘要 ──────────────────────────────
 function showSummary() {
