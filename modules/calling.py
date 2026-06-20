@@ -138,7 +138,8 @@ def _render_calling_fragment(conn, current_station: str):
                     (queue_df["體驗站點"] == current_station) &
                     (queue_df["狀態"] == STATUS_SERVING)
                 ].index[0]
-                new_ts   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _TW_TZ = datetime.timezone(datetime.timedelta(hours=8))
+                new_ts   = datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
                 ss       = _open_spreadsheet()
                 ws       = ss.worksheet("Queue")
                 time_col = list(queue_df.columns).index("報名時間") + 1

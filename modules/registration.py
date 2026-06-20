@@ -16,8 +16,32 @@ GFORM_DEFAULT   = "表單回應 1"
 # ─────────────────────────────────────────
 # 工具函式
 # ─────────────────────────────────────────
+_TW_TZ = datetime.timezone(datetime.timedelta(hours=8))  # 固定 UTC+8，不依賴伺服器時區
+
+
 def _today() -> str:
-    return datetime.date.today().strftime("%Y-%m-%d")
+    """永遠回傳台灣（UTC+8）當日日期，無論伺服器時區為何。"""
+    return datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d")
+
+
+def _tw_date(val) -> str:
+    """將 GAS 可能回傳的任何日期格式，統一轉成台灣日期 YYYY-MM-DD。
+    支援：
+      "2026-06-20 15:30:00"        → "2026-06-20"（台灣時間，直接截）
+      "2026-06-19T23:09:13.000Z"   → "2026-06-20"（UTC→+8 轉換）
+    """
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", ""):
+        return ""
+    if "T" in s:
+        # ISO UTC 格式："2026-06-19T23:09:13.000Z"
+        try:
+            clean = s[:19].replace("T", " ")          # "2026-06-19 23:09:13"
+            d = datetime.datetime.strptime(clean, "%Y-%m-%d %H:%M:%S")
+            return (d + datetime.timedelta(hours=8)).strftime("%Y-%m-%d")
+        except Exception:
+            return s[:10]
+    return s[:10]  # "2026-06-20 15:30:00" → "2026-06-20"
 
 
 def _norm_queue(queue_df: pd.DataFrame) -> pd.DataFrame:
@@ -32,7 +56,7 @@ def get_active_count(queue_df: pd.DataFrame, serial: int, today: str) -> int:
         return 0
     q = _norm_queue(queue_df)
     person = q[q["報到序號"] == serial]
-    today_rows = person[person["報名時間"].astype(str).str.startswith(today, na=False)]
+    today_rows = person[person["報名時間"].apply(_tw_date) == today]
     return len(today_rows[today_rows["狀態"].isin([STATUS_WAITING, STATUS_SERVING])])
 
 
@@ -42,7 +66,7 @@ def get_today_items(queue_df: pd.DataFrame, serial: int, today: str) -> set:
         return set()
     q = _norm_queue(queue_df)
     person = q[q["報到序號"] == serial]
-    today_rows = person[person["報名時間"].astype(str).str.startswith(today, na=False)]
+    today_rows = person[person["報名時間"].apply(_tw_date) == today]
     return set(today_rows["體驗站點"].dropna().tolist())
 
 
@@ -54,7 +78,7 @@ def is_done(queue_df: pd.DataFrame, serial: int, item: str, today: str) -> bool:
     rows = q[
         (q["報到序號"] == serial) &
         (q["體驗站點"] == item) &
-        (q["報名時間"].astype(str).str.startswith(today, na=False))
+        (q["報名時間"].apply(_tw_date) == today)
     ]
     if rows.empty:
         return False
@@ -83,7 +107,7 @@ def _auto_sync_gform(conn):
         if truly_new.empty:
             return
 
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         with get_submit_lock():
             reg_df = safe_read(conn, "Registration", ttl=0, default_cols=REG_COLS)
@@ -285,7 +309,7 @@ def _render_list(conn, person_list, available_items, all_items, queue_df, reg_df
 # 執行分配（寫入 Queue / Registration / Settings）
 # ─────────────────────────────────────────
 def do_assign(conn, serial: int, name: str, new_items: list, today: str):
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_time = datetime.datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     with get_submit_lock():
         queue_df = safe_read(conn, "Queue",        ttl=0, default_cols=QUEUE_COLS)
