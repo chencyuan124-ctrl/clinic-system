@@ -82,7 +82,7 @@ def _fetch_from_gas(sheet_name: str, _cache_bust: int = 0) -> pd.DataFrame:
     """透過 GAS Web App 讀取工作表，所有使用者共用此快取。"""
     try:
         url = st.secrets["gas"]["read_url"]
-        resp = requests.get(url, params={"sheet": sheet_name}, timeout=15)
+        resp = requests.get(url, params={"sheet": sheet_name, "v": _cache_bust}, timeout=15)
         resp.raise_for_status()
         payload = resp.json()
         if "error" in payload:
