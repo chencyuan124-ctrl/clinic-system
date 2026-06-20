@@ -3,8 +3,25 @@ import pandas as pd
 from utils import safe_read, SET_COLS
 
 
+_SHEET_URL  = "https://docs.google.com/spreadsheets/d/1yYWTlQ6qTOz-7R9w8tMo292oAvRP6yi8oFSugXbzXYQ"
+_GAS_URL    = "https://script.google.com/macros/s/AKfycbxneDWtFzXsmGzPKVYxkRqP1bW_5-y25OWdc1VJS3eZNBHZge6NNnclvXzWgoy3diOt/exec"
+_FORM_URL   = "https://forms.gle/si5W6w8dPkCLzYEb9"
+
+
 def render_settings_page(conn):
     st.subheader("⚙️ 體驗項目設定概覽")
+
+    # ── 快速連結 ──────────────────────────
+    st.markdown("### 🔗 快速連結")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.link_button("📊 義診資料庫試算表", _SHEET_URL, use_container_width=True)
+    with c2:
+        st.link_button("⚙️ GAS 登入系統", _GAS_URL, use_container_width=True)
+    with c3:
+        st.link_button("📝 現場報名表單", _FORM_URL, use_container_width=True)
+
+    st.markdown("---")
     st.info(
         "📋 **項目設定由 Google Sheets 管理**\n\n"
         "如需新增、修改或刪除體驗項目，請直接開啟 Google Sheets 的「Settings」工作表進行編輯。\n\n"
