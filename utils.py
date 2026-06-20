@@ -123,10 +123,10 @@ def append_service_log(log_rows: list):
 
 
 _EVENT_MAP = {
-    (STATUS_WAITING, STATUS_SERVING): "CALLING",
-    (STATUS_SERVING, STATUS_DONE):    "DONE",
-    (STATUS_SERVING, STATUS_MISSED):  "MISSED",
-    (STATUS_DONE,    STATUS_WAITING): "UNDO_DONE",
+    ("等待中", "服務中"): "CALLING",
+    ("服務中", "完成"):   "DONE",
+    ("服務中", "過號"):   "MISSED",
+    ("完成",   "等待中"): "UNDO_DONE",
 }
 
 
